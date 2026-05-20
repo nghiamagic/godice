@@ -1,4 +1,4 @@
-
+import { BleClient } from '@capacitor-community/bluetooth-le'
 
 const connectBtn =
   document.getElementById('connectBtn')
@@ -39,9 +39,7 @@ const faces = {
   6:'⚅'
 }
 
-let device = null
-let server = null
-
+let deviceId = null
 let reconnecting = false
 
 let lastFace = null
@@ -108,8 +106,6 @@ function sleepScreen(){
   )
 }
 
-/* touch */
-
 document.addEventListener(
   'touchstart',
   wakeScreen
@@ -120,8 +116,6 @@ document.addEventListener(
   sleepScreen
 )
 
-/* mouse */
-
 document.addEventListener(
   'mousedown',
   wakeScreen
@@ -131,8 +125,6 @@ document.addEventListener(
   'mouseup',
   sleepScreen
 )
-
-/* exit sleep mode with 2 fingers */
 
 document.addEventListener(
   'touchmove',
@@ -160,36 +152,40 @@ async function connect(){
 
   try{
 
-    log('Searching GoDice...')
+    log('Initializing BLE...')
 
-    device =
-      await navigator.bluetooth.requestDevice({
+    await BleClient.initialize()
 
-        filters:[
-          {
-            namePrefix:'GoDice'
-          }
-        ],
+    log('Scanning GoDice...')
 
-        optionalServices:[
+    const device =
+      await BleClient.requestDevice({
+
+        namePrefix: 'GoDice',
+
+        optionalServices: [
           'battery_service'
         ]
-
       })
 
-    deviceNameEl.innerText =
-      device.name || 'Unknown'
+    deviceId = device.deviceId
 
-    device.addEventListener(
-      'gattserverdisconnected',
-      onDisconnected
+    deviceNameEl.innerText =
+      device.name || 'GoDice'
+
+    log(
+      'Found: ' +
+      device.name
     )
 
     await connectGATT()
 
   }catch(e){
 
-    log('ERROR: ' + e.message)
+    log(
+      'ERROR: ' +
+      e.message
+    )
   }
 }
 
@@ -197,8 +193,10 @@ async function connectGATT(){
 
   try{
 
-    server =
-      await device.gatt.connect()
+    await BleClient.connect(
+      deviceId,
+      onDisconnected
+    )
 
     log('Connected')
 
@@ -226,14 +224,15 @@ async function disconnect(){
 
     reconnecting = false
 
-    if(
-      device &&
-      device.gatt.connected
-    ){
+    if(deviceId){
 
-      device.gatt.disconnect()
+      await BleClient.disconnect(
+        deviceId
+      )
 
-      log('Disconnected manually')
+      log(
+        'Disconnected manually'
+      )
     }
 
   }catch(e){
@@ -270,13 +269,17 @@ async function autoReconnect(){
 
       reconnecting = false
 
-      log('Reconnect success')
+      log(
+        'Reconnect success'
+      )
 
       return
 
     }catch(e){
 
-      log('Reconnect failed')
+      log(
+        'Reconnect failed'
+      )
 
       await delay(3000)
     }
@@ -287,21 +290,18 @@ async function readBattery(){
 
   try{
 
-    const service =
-      await server.getPrimaryService(
-        'battery_service'
-      )
-
-    const characteristic =
-      await service.getCharacteristic(
-        'battery_level'
-      )
-
     const value =
-      await characteristic.readValue()
+      await BleClient.read(
+
+        deviceId,
+
+        '180F',
+
+        '2A19'
+      )
 
     const battery =
-      value.getUint8(0)
+      new Uint8Array(value)[0]
 
     batteryEl.innerText =
       battery + '%'
@@ -313,104 +313,97 @@ async function readBattery(){
 
   }catch(e){
 
-    log('Battery unavailable')
+    log(
+      'Battery unavailable'
+    )
   }
 }
 
 async function setupNotifications(){
 
-  const services =
-    await server.getPrimaryServices()
+  try{
 
-  for(const service of services){
-
-    log(
-      'SERVICE: ' +
-      service.uuid
-    )
-
-    let characteristics = []
-
-    try{
-
-      characteristics =
-        await service.getCharacteristics()
-
-    }catch(e){
-
-      log(
-        'Cannot read characteristics'
+    const services =
+      await BleClient.getServices(
+        deviceId
       )
 
-      continue
-    }
-
-    for(const ch of characteristics){
-
-      if(!ch) continue
+    for(const service of services){
 
       log(
-        'CHAR: ' + ch.uuid
+        'SERVICE: ' +
+        service.uuid
       )
 
-      // WebBLE fix
       if(
-        !ch.properties
+        !service.characteristics
       ){
         continue
       }
 
-      if(
-        ch.properties.notify === true ||
-        ch.properties.indicate === true
+      for(
+        const ch
+        of service.characteristics
       ){
 
-        try{
+        log(
+          'CHAR: ' +
+          ch.uuid
+        )
 
-          await ch.startNotifications()
+        if(
+          ch.properties.notify
+        ){
 
-          ch.addEventListener(
-            'characteristicvaluechanged',
-            handleNotification
-          )
+          try{
 
-          log(
-            'Notify enabled'
-          )
+            await BleClient.startNotifications(
 
-        }catch(e){
+              deviceId,
 
-          log(
-            'Notify fail: ' +
-            e.message
-          )
+              service.uuid,
+
+              ch.uuid,
+
+              value => {
+
+                const data =
+                  [...new Uint8Array(value)]
+
+                log(
+                  'DATA: ' +
+                  JSON.stringify(data)
+                )
+
+                parseDicePacket(data)
+              }
+            )
+
+            log(
+              'Notify enabled'
+            )
+
+          }catch(e){
+
+            log(
+              'Notify fail'
+            )
+          }
         }
       }
     }
+
+  }catch(e){
+
+    log(
+      'Notify setup fail: ' +
+      e.message
+    )
   }
-}
-
-function handleNotification(event){
-
-  const value =
-    event.target.value
-
-  const data =
-    [...new Uint8Array(
-      value.buffer
-    )]
-
-  log(
-    'DATA: ' +
-    JSON.stringify(data)
-  )
-
-  parseDicePacket(data)
 }
 
 function parseDicePacket(data){
 
-  // ===== ROLLING =====
   if(
     data.length === 1 &&
     data[0] === 82
@@ -424,7 +417,6 @@ function parseDicePacket(data){
     return
   }
 
-  // invalid packet
   if(data.length < 4) return
 
   setStatus(
@@ -434,7 +426,6 @@ function parseDicePacket(data){
 
   let x, y, z
 
-  // packet 5 byte
   if(data.length >= 5){
 
     x = data[2]
@@ -442,7 +433,6 @@ function parseDicePacket(data){
     z = data[4]
   }
 
-  // packet 4 byte
   else{
 
     x = data[1]
@@ -452,74 +442,71 @@ function parseDicePacket(data){
 
   let face = null
 
-  // ===== FACE 1 =====
-if(
-  x >= 189 && x <= 195 &&
-  (
-    y >= 248 ||
-    y <= 3
-  )
-){
-  face = 1
-}
+  if(
+    x >= 189 && x <= 195 &&
+    (
+      y >= 248 ||
+      y <= 3
+    )
+  ){
+    face = 1
+  }
 
-// ===== FACE 2 =====
-else if(
-  (
-    y >= 248 ||
-    y <= 3
-  ) &&
-  z >= 61 && z <= 63
-){
-  face = 2
-}
+  else if(
+    (
+      y >= 248 ||
+      y <= 3
+    ) &&
+    z >= 61 && z <= 63
+  ){
+    face = 2
+  }
 
-// ===== FACE 3 =====
-else if(
-  y >= 57 && y <= 66 &&
-  (
-    z >= 248 ||
-    z <= 4
-  )
-){
-  face = 3
-}
+  else if(
+    y >= 57 && y <= 66 &&
+    (
+      z >= 248 ||
+      z <= 4
+    )
+  ){
+    face = 3
+  }
 
-// ===== FACE 4 =====
-else if(
-  y >= 186 && y <= 195
-){
-  face = 4
-}
+  else if(
+    y >= 186 && y <= 195
+  ){
+    face = 4
+  }
 
-// ===== FACE 5 =====
-else if(
-  (
-    y >= 248 ||
-    y <= 4
-  ) &&
-  z >= 186 && z <= 195
-){
-  face = 5
-}
+  else if(
+    (
+      y >= 248 ||
+      y <= 4
+    ) &&
+    z >= 186 && z <= 195
+  ){
+    face = 5
+  }
 
-// ===== FACE 6 =====
-else if(
-  x >= 62 && x <= 66 &&
-z >= 0 && z <= 255
-){
-  face = 6
-}
+  else if(
+    x >= 62 && x <= 66
+  ){
+    face = 6
+  }
 
-  // ===== UPDATE UI =====
   if(face){
-window.set(
-    window.ref(window.db, 'dice'),
-    {
-      face: face,
-      time: Date.now()
-    }
-  )
+
+    window.set(
+      window.ref(
+        window.db,
+        'dice'
+      ),
+      {
+        face: face,
+        time: Date.now()
+      }
+    )
+
     wakeScreen()
 
     const now = Date.now()
@@ -546,19 +533,6 @@ window.set(
       )
     }
   }
-
-  // ===== BATTERY =====
-  const battery =
-    data.find(v =>
-      v >= 10 &&
-      v <= 100
-    )
-
-  if(battery){
-
-    batteryEl.innerText =
-      battery + '%'
-  }
 }
 
 function delay(ms){
@@ -567,25 +541,3 @@ function delay(ms){
     setTimeout(resolve, ms)
   )
 }
-
-if(
-  'serviceWorker' in navigator
-){
-
-  navigator.serviceWorker
-    .register('./sw.js')
-    .then(() => {
-
-      log(
-        'Service Worker Ready'
-      )
-
-    })
-    .catch(() => {
-
-      log(
-        'SW registration fail'
-      )
-    })
-}
-
