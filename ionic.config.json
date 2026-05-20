@@ -1,0 +1,7 @@
+{
+  "name": "godice",
+  "integrations": {
+    "capacitor": {}
+  },
+  "type": "react-vite"
+}
