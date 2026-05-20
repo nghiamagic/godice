@@ -4,6 +4,9 @@ const config: CapacitorConfig = {
    appId: 'com.godice.app',
   appName: 'GoDice',
   webDir: 'dist'
+   ios: {
+    useFrameworks: 'static'
+  }
 };
 
 export default config;
